@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Box Royale — build & shoot battle royale</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:system-ui,-apple-system,sans-serif;color:#fff}
+  canvas{display:block}
+  #hud{position:fixed;inset:0;pointer-events:none}
+  #cross{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px}
+  #cross:before,#cross:after{content:"";position:absolute;background:#fff;box-shadow:0 0 2px #000}
+  #cross:before{left:8px;top:0;width:2px;height:18px}#cross:after{top:8px;left:0;height:2px;width:18px}
+  #cross.hit:before,#cross.hit:after{background:#ff3b3b}
+  #hp{position:absolute;left:20px;bottom:20px;font-size:28px;font-weight:800;text-shadow:0 2px 4px #000}
+  #hpbar{width:240px;height:12px;background:#0008;border-radius:6px;overflow:hidden;margin-top:6px}
+  #hpfill{height:100%;background:#3ddc84;width:100%;transition:width .1s}
+  #top{position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:900;text-shadow:0 2px 4px #000;white-space:nowrap}
+  #status{position:absolute;top:48px;left:50%;transform:translateX(-50%);font-size:14px;opacity:.9;text-shadow:0 1px 3px #000;white-space:nowrap}
+  #feed{position:absolute;top:14px;right:16px;text-align:right;font-size:13px;line-height:1.7}
+  #feed div{background:#0007;padding:2px 8px;border-radius:5px;margin-bottom:3px}
+  #keys{position:absolute;right:16px;bottom:16px;font-size:13px;line-height:1.6;background:#0007;padding:10px 14px;border-radius:8px}
+  #keys b{display:inline-block;min-width:22px;text-align:center;background:#fff2;border-radius:4px;margin-right:6px}
+  #flash{position:absolute;inset:0;background:radial-gradient(transparent 40%,#f003);opacity:0;transition:opacity .25s}
+  #storm{position:absolute;inset:0;background:#7a2bd655;opacity:0;transition:opacity .4s}
+  #banner{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);font-size:46px;font-weight:900;text-shadow:0 3px 8px #000;opacity:0;transition:opacity .3s;text-align:center;white-space:nowrap}
+  #menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(#234 0%,#0a0d14 70%);z-index:5}
+  .card{background:#151b26;padding:32px 36px;border-radius:16px;width:340px;box-shadow:0 20px 60px #0008;text-align:center}
+  h1{margin:0 0 4px;font-size:40px;letter-spacing:1px}
+  .sub{opacity:.6;margin-bottom:22px}
+  button{width:100%;padding:13px;margin:6px 0;border:0;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;background:#2f7cf6;color:#fff}
+  button.alt{background:#2a3242}
+  button:hover{filter:brightness(1.12)}
+  input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:0;background:#0d1119;color:#fff;font-size:18px;text-align:center;letter-spacing:4px;text-transform:uppercase;margin-top:6px}
+  #msg{margin-top:14px;min-height:20px;font-size:14px;color:#9cf;word-break:break-all}
+  #code{font-size:34px;font-weight:900;letter-spacing:6px;color:#5ab0ff}
+</style>
+</head>
+<body>
+<div id="menu"><div class="card">
+  <h1>BOX ROYALE</h1><div class="sub">build &amp; shoot battle royale · 16 fighters</div>
+  <button id="soloBtn">Play solo vs 15 bots</button>
+  <button id="hostBtn" class="alt">Host online match</button>
+  <input id="joinCode" placeholder="ROOM CODE" maxlength="5">
+  <button id="joinBtn" class="alt">Join match</button>
+  <div id="msg"></div>
+</div></div>
+<div id="hud">
+  <div id="storm"></div><div id="flash"></div>
+  <div id="cross"></div>
+  <div id="top"></div>
+  <div id="status"></div>
+  <div id="feed"></div>
+  <div id="banner"></div>
+  <div id="hp">100<div id="hpbar"><div id="hpfill"></div></div></div>
+  <div id="keys"><b>WASD</b>move <b>␣</b>jump <b>LMB</b>shoot<br><b>Q</b>wall <b>E</b>ramp <b>F</b>floor<br>Stay inside the circle. Last one standing wins.</div>
+</div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- constants ----------
+const S = 4, R = 0.4, H = 1.8, EYE = 1.6, SPEED = 7.5, JUMP = 8.5, GRAV = 24;
+const PIECE_HP = 100, FIRE_CD = 0.25, BUILD_CD = 0.12, ARENA = 130, TOTAL = 16;
+const $ = id => document.getElementById(id);
+const V3 = THREE.Vector3;
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fc6ff);
+scene.fog = new THREE.Fog(0x8fc6ff, 70, 220);
+const camera = new THREE.PerspectiveCamera(80, innerWidth / innerHeight, 0.05, 500);
+scene.add(camera);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+scene.add(new THREE.HemisphereLight(0xdfefff, 0x445533, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, far: 160 });
+scene.add(sun, sun.target);
+
+const gtex = (() => { const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+  g.fillStyle = '#5c9e52'; g.fillRect(0, 0, 128, 128); g.strokeStyle = '#4e8a45'; g.lineWidth = 4; g.strokeRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(ARENA * 2 / S, ARENA * 2 / S); t.anisotropy = 8; return t; })();
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA * 2, ARENA * 2), new THREE.MeshLambertMaterial({ map: gtex }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+const solids = [];               // {min,max,mesh}
+const worldMeshes = [ground];    // everything bullets can hit except people
+function addBox(cx, cy, cz, sx, sy, sz, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+  m.position.set(cx, cy, cz); m.castShadow = m.receiveShadow = true; scene.add(m);
+  const s = { min: new V3(cx - sx / 2, cy - sy / 2, cz - sz / 2), max: new V3(cx + sx / 2, cy + sy / 2, cz + sz / 2), mesh: m };
+  solids.push(s); worldMeshes.push(m); return s;
+}
+// deterministic map (same for everyone)
+let seed = 4242; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const wallMat = new THREE.MeshLambertMaterial({ color: 0x55606e });
+for (const [x, z, sx, sz] of [[0, -ARENA, ARENA * 2, 1], [0, ARENA, ARENA * 2, 1], [-ARENA, 0, 1, ARENA * 2], [ARENA, 0, 1, ARENA * 2]]) addBox(x, 4, z, sx, 8, sz, wallMat);
+const crateMat = new THREE.MeshLambertMaterial({ color: 0xc8924a });
+const rockMat = new THREE.MeshLambertMaterial({ color: 0x8a8f96 });
+for (let i = 0; i < 130; i++) { const x = (rnd() * 2 - 1) * (ARENA - 8), z = (rnd() * 2 - 1) * (ARENA - 8), h = 1 + rnd() * 2.5, w = 2 + rnd() * 3; addBox(x, h / 2, z, w, h, w, rnd() < 0.5 ? crateMat : rockMat); }
+const houseMats = [0xd9d2c3, 0xb8c9d9, 0xe0b8a8].map(c => new THREE.MeshLambertMaterial({ color: c }));
+const roofMat = new THREE.MeshLambertMaterial({ color: 0x8a3b2e });
+for (let i = 0; i < 16; i++) {
+  const x = (rnd() * 2 - 1) * (ARENA - 20), z = (rnd() * 2 - 1) * (ARENA - 20), W = 10, Hh = 4, t = 0.4, m = houseMats[i % 3];
+  const seg = (W - 2.6) / 2;
+  addBox(x, Hh / 2, z - W / 2, W, Hh, t, m);
+  addBox(x - W / 2 + seg / 2, Hh / 2, z + W / 2, seg, Hh, t, m); addBox(x + W / 2 - seg / 2, Hh / 2, z + W / 2, seg, Hh, t, m);
+  addBox(x - W / 2, Hh / 2, z, t, Hh, W, m); addBox(x + W / 2, Hh / 2, z, t, Hh, W, m);
+  addBox(x, Hh + 0.2, z, W + 0.4, 0.4, W + 0.4, roofMat);
+}
+
+// ---------- storm zone ----------
+const zone = { cx: 0, cz: 0, t0: 0, active: false };
+const zoneMesh = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 120, 96, 1, true),
+  new THREE.MeshBasicMaterial({ color: 0x9b4dff, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false }));
+zoneMesh.position.y = 50; zoneMesh.visible = false; scene.add(zoneMesh);
+function zoneR() { if (!zone.active) return 1e9; const t = (performance.now() - zone.t0) / 1000; return t < 25 ? 175 : Math.max(5, 175 - (t - 25) * 1.15); }
+const outside = p => Math.hypot(p.x - zone.cx, p.z - zone.cz) > zoneR();
+
+// ---------- build pieces ----------
+const pieces = new Map();
+const pieceMats = { me: new THREE.MeshLambertMaterial({ color: 0x8fc7ff, transparent: true, opacity: 0.92 }), op: new THREE.MeshLambertMaterial({ color: 0xffa38f, transparent: true, opacity: 0.92 }) };
+let buildCounter = 0;
+function cellInfo(pos, yaw) {
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw); let dx = 0, dz = 0;
+  if (Math.abs(fx) > Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
+  return { cx: Math.floor(pos.x / S), cz: Math.floor(pos.z / S), level: Math.max(0, Math.floor((pos.y + 0.3) / S)), dx, dz };
+}
+function spawnPiece(p) {
+  if (pieces.has(p.id)) return;
+  const mat = p.owner === myId ? pieceMats.me : pieceMats.op, y0 = p.level * S;
+  const rec = { ...p, hp: PIECE_HP };
+  if (p.kind === 'wall') {
+    const cx = (p.cx + 0.5) * S + p.dx * S / 2, cz = (p.cz + 0.5) * S + p.dz * S / 2;
+    rec.solid = p.dx ? addBox(cx, y0 + S / 2, cz, 0.25, S, S, mat) : addBox(cx, y0 + S / 2, cz, S, S, 0.25, mat);
+  } else if (p.kind === 'floor') {
+    rec.solid = addBox((p.cx + p.dx + 0.5) * S, y0 + 0.1, (p.cz + p.dz + 0.5) * S, S, 0.2, S, mat);
+  } else {
+    const tx = p.cx + p.dx, tz = p.cz + p.dz, L = S * Math.SQRT2;
+    const m = new THREE.Mesh(p.dx ? new THREE.BoxGeometry(L, 0.2, S) : new THREE.BoxGeometry(S, 0.2, L), mat);
+    m.position.set((tx + 0.5) * S, y0 + S / 2, (tz + 0.5) * S);
+    if (p.dx) m.rotation.z = p.dx * Math.PI / 4; else m.rotation.x = -p.dz * Math.PI / 4;
+    m.castShadow = m.receiveShadow = true; scene.add(m); worldMeshes.push(m);
+    rec.mesh = m; rec.ramp = { x0: tx * S, z0: tz * S, y0, dx: p.dx, dz: p.dz };
+  }
+  if (rec.solid) rec.mesh = rec.solid.mesh;
+  rec.mesh.userData.piece = p.id;
+  pieces.set(p.id, rec);
+}
+function removePiece(id) {
+  const r = pieces.get(id); if (!r) return;
+  scene.remove(r.mesh); r.mesh.geometry.dispose();
+  worldMeshes.splice(worldMeshes.indexOf(r.mesh), 1);
+  if (r.solid) solids.splice(solids.indexOf(r.solid), 1);
+  pieces.delete(id);
+}
+function damagePiece(id, dmg) {
+  const r = pieces.get(id); if (!r) return;
+  r.hp -= dmg; r.mesh.material = r.mesh.material.clone(); r.mesh.material.opacity = 0.35 + 0.57 * Math.max(0, r.hp) / PIECE_HP;
+  if (r.hp <= 0) removePiece(id);
+}
+const clearPieces = () => { for (const id of [...pieces.keys()]) removePiece(id); };
+function rampHeight(r, x, z) {
+  const m = 0.05;
+  if (x < r.x0 - m || x > r.x0 + S + m || z < r.z0 - m || z > r.z0 + S + m) return null;
+  const t = r.dx > 0 ? (x - r.x0) / S : r.dx < 0 ? (r.x0 + S - x) / S : r.dz > 0 ? (z - r.z0) / S : (r.z0 + S - z) / S;
+  return r.y0 + Math.min(1, Math.max(0, t)) * S;
+}
+
+// ---------- people ----------
+const skin = [0xf2c79a, 0xc68b59, 0x8d5524, 0xffdbac, 0xe0ac69];
+function makeAvatar(color, i) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color });
+  const legMat = new THREE.MeshLambertMaterial({ color: 0x2d3a55 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.75, 0.45), mat); body.position.y = 1.2;
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 0.4), legMat); legs.position.y = 0.4;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.48, 0.48), new THREE.MeshLambertMaterial({ color: skin[i % skin.length] })); head.position.y = 1.83;
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.05), new THREE.MeshBasicMaterial({ color: 0x111111 })); visor.position.set(0, 1.88, -0.25);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 0.8), new THREE.MeshLambertMaterial({ color: 0x222222 })); gun.position.set(0.35, 1.25, -0.45);
+  for (const m of [body, legs, head]) m.castShadow = true;
+  g.add(body, legs, head, visor, gun);
+  return { g, hit: [body, legs, head], head };
+}
+const ents = new Map(); // id -> {id, kind, av, pos, vel, yaw, alive, hp, onGround, ai}
+let entCount = 0;
+function getEnt(id, kind) {
+  let e = ents.get(id); if (e) return e;
+  const n = entCount++;
+  const av = makeAvatar(kind === 'bot' ? new THREE.Color().setHSL((n * 0.137) % 1, 0.6, 0.5) : 0xe5533d, n);
+  for (const m of av.hit) { m.userData.ent = id; m.userData.part = m === av.head ? 'head' : 'body'; }
+  scene.add(av.g); av.g.visible = false;
+  e = { id, kind, av, pos: new V3(), vel: new V3(), yaw: 0, alive: false, hp: 100, onGround: false, ai: { think: 0, fire: 1, wander: Math.random() * 6.3, strafe: 1, target: null, last: new V3() } };
+  ents.set(id, e); return e;
+}
+function removeEnt(id) { const e = ents.get(id); if (!e) return; scene.remove(e.av.g); ents.delete(id); }
+const personMeshes = () => { const a = []; for (const e of ents.values()) if (e.av.g.visible) a.push(...e.av.hit); return a; };
+
+const fpGun = new THREE.Group();
+fpGun.add(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.13, 0.6), new THREE.MeshLambertMaterial({ color: 0x2b2f38 })));
+const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.3), new THREE.MeshLambertMaterial({ color: 0x111111 })); barrel.position.z = -0.42; fpGun.add(barrel);
+fpGun.position.set(0.25, -0.22, -0.5); camera.add(fpGun);
+
+// ---------- me ----------
+const me = { pos: new V3(0, 0, 0), vel: new V3(), yaw: 0, pitch: 0, hp: 100, onGround: false, alive: true };
+let mode = null, isHost = false, myId = 'host', fireT = 0, buildT = 0, recoil = 0, kills = 0, inMatch = false, stormTick = 0;
+
+// ---------- input ----------
+const keys = {};
+const locked = () => document.pointerLockElement === renderer.domElement;
+addEventListener('keydown', e => { keys[e.code] = true;
+  if (e.code === 'Enter' && isHost && !inMatch && mode) startMatch();
+  if (!locked() || !me.alive) return;
+  if (e.code === 'KeyQ') build('wall'); if (e.code === 'KeyE') build('ramp'); if (e.code === 'KeyF') build('floor'); });
+addEventListener('keyup', e => keys[e.code] = false);
+renderer.domElement.addEventListener('click', () => { if (!locked() && mode) renderer.domElement.requestPointerLock(); });
+addEventListener('mousemove', e => { if (!locked()) return; me.yaw -= e.movementX * 0.0022; me.pitch = Math.max(-1.5, Math.min(1.5, me.pitch - e.movementY * 0.0022)); });
+let mouseDown = false;
+addEventListener('mousedown', e => { if (e.button === 0 && locked()) mouseDown = true; });
+addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
+
+// ---------- networking: host is the hub, everyone else connects to it ----------
+let peer = null, hostConn = null;
+const conns = new Map();
+const PREFIX = 'boxroyale-v1-';
+function send(m) {
+  if (isHost) { for (const c of conns.values()) if (c.open) c.send(m); }
+  else if (hostConn && hostConn.open) hostConn.send(m);
+}
+const setStatus = t => $('status').textContent = t;
+const msg = t => $('msg').textContent = t;
+function host() {
+  const code = Array.from({ length: 5 }, () => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.random() * 31 | 0]).join('');
+  msg('Connecting to lobby server…');
+  peer = new Peer(PREFIX + code);
+  peer.on('open', () => {
+    isHost = true; myId = 'host';
+    const link = location.origin + location.pathname + '?room=' + code;
+    $('msg').innerHTML = `Room code<div id="code">${code}</div><small>Share the code or link:<br><a style="color:#9cf" href="${link}">${link}</a></small><br><br><button id="goBtn">Enter lobby</button>`;
+    $('goBtn').onclick = () => enter('online');
+  });
+  peer.on('connection', c => {
+    c.on('open', () => { conns.set(c.peer, c); c.send({ t: 'hi', inMatch }); feed('A player joined'); });
+    c.on('data', d => { for (const [id, o] of conns) if (id !== c.peer && o.open) o.send(d); onData(d); });
+    c.on('close', () => { conns.delete(c.peer); const e = ents.get(c.peer); if (e && e.alive && inMatch) { onDeath(c.peer, 'disconnect'); send({ t: 'die', id: c.peer, by: 'disconnect' }); } removeEnt(c.peer); });
+  });
+  peer.on('error', e => msg('Error: ' + e.type));
+}
+function join(code) {
+  code = code.trim().toUpperCase(); if (!code) return msg('Enter a room code');
+  msg('Connecting…');
+  peer = new Peer();
+  peer.on('open', id => {
+    myId = id; isHost = false;
+    hostConn = peer.connect(PREFIX + code, { reliable: true });
+    hostConn.on('open', () => enter('online'));
+    hostConn.on('data', onData);
+    hostConn.on('close', () => { setStatus('Host left the game'); banner('HOST LEFT'); });
+    setTimeout(() => { if (!hostConn.open) msg('Could not find room ' + code); }, 9000);
+  });
+  peer.on('error', e => msg(e.type === 'peer-unavailable' ? 'Room not found' : 'Error: ' + e.type));
+}
+$('hostBtn').onclick = host;
+$('joinBtn').onclick = () => join($('joinCode').value);
+$('soloBtn').onclick = () => { isHost = true; myId = 'host'; enter('solo'); startMatch(); };
+const qRoom = new URLSearchParams(location.search).get('room');
+if (qRoom) { $('joinCode').value = qRoom; join(qRoom); }
+
+function enter(m) {
+  mode = m; $('menu').style.display = 'none';
+  me.pos.set((Math.random() - 0.5) * 20, 0, (Math.random() - 0.5) * 20); me.alive = true; me.hp = 100;
+  renderer.domElement.requestPointerLock(); updateHud();
+}
+
+function onData(d) {
+  if (d.t === 's') { if (d.id === myId) return; const e = getEnt(d.id, 'human'); e.pos.fromArray(d.p); e.yaw = d.y; e.alive = !d.g; e.av.g.visible = !d.g; }
+  else if (d.t === 'hi') { if (d.inMatch) { me.alive = false; setStatus('Match in progress — spectating until next round'); } }
+  else if (d.t === 'b') spawnPiece(d.p);
+  else if (d.t === 'pd') damagePiece(d.id, d.dmg);
+  else if (d.t === 'shot') tracer(new V3().fromArray(d.a), new V3().fromArray(d.b), 0xffb070);
+  else if (d.t === 'hit') { if (d.to === myId) takeDamage(d.dmg, d.from); else if (isHost) { const e = ents.get(d.to); if (e && e.kind === 'bot') damageBot(e, d.dmg, d.from); } }
+  else if (d.t === 'die') onDeath(d.id, d.by);
+  else if (d.t === 'w') {
+    for (const [id, x, y, z, yaw, alive] of d.b) { const e = getEnt(id, 'bot'); e.pos.set(x, y, z); e.yaw = yaw; e.alive = !!alive; e.av.g.visible = !!alive; }
+  }
+  else if (d.t === 'start') onStart(d);
+  else if (d.t === 'win') onWin(d.id);
+}
+
+// ---------- match flow (host runs it) ----------
+function startMatch() {
+  const humans = [myId, ...conns.keys()];
+  const spawns = {}, bots = [];
+  const rp = () => [(Math.random() * 2 - 1) * (ARENA - 15), (Math.random() * 2 - 1) * (ARENA - 15)];
+  for (const id of humans) spawns[id] = rp();
+  for (let i = 0; i < Math.max(0, TOTAL - humans.length); i++) { const id = 'bot' + i; bots.push(id); spawns[id] = rp(); }
+  for (const id of [...ents.keys()]) if (id.startsWith('bot') && !bots.includes(id)) removeEnt(id);
+  const d = { t: 'start', zc: [(Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80], spawns, bots };
+  send(d); onStart(d);
+}
+function onStart(d) {
+  clearPieces(); inMatch = true; kills = 0;
+  zone.cx = d.zc[0]; zone.cz = d.zc[1]; zone.t0 = performance.now(); zone.active = true; zoneMesh.visible = true;
+  for (const id of d.bots) { const e = getEnt(id, 'bot'); const [x, z] = d.spawns[id]; e.pos.set(x, 0, z); e.vel.set(0, 0, 0); e.hp = 100; e.alive = true; e.av.g.visible = true; e.av.g.position.copy(e.pos); }
+  for (const [id, e] of ents) if (e.kind === 'human') { e.alive = !!d.spawns[id]; }
+  const sp = d.spawns[myId];
+  if (sp) { me.pos.set(sp[0], 0, sp[1]); me.vel.set(0, 0, 0); me.hp = 100; me.alive = true; me.yaw = Math.atan2(sp[0] - zone.cx, sp[1] - zone.cz); }
+  else me.alive = false;
+  banner('DROP IN!'); feed('Match started — ' + Object.keys(d.spawns).length + ' fighters'); updateHud();
+}
+function aliveIds() { const a = []; if (me.alive && inMatch) a.push(myId); for (const e of ents.values()) if (e.alive) a.push(e.id); return a; }
+const name = id => id === myId ? 'You' : id === 'storm' ? 'the storm' : id === 'disconnect' ? 'disconnect' : id.startsWith('bot') ? 'Bot ' + (+id.slice(3) + 1) : id === 'host' ? 'Host' : 'Player ' + id.slice(0, 4);
+function onDeath(id, by) {
+  if (!inMatch) return;
+  if (id !== myId) { const e = ents.get(id); if (e) { if (!e.alive && e.kind === 'bot') return; e.alive = false; e.av.g.visible = false; } }
+  if (by === myId && id !== myId) { kills++; banner('ELIMINATED ' + name(id).toUpperCase()); }
+  feed(by === 'storm' ? `${name(id)} was taken by the storm` : by === 'disconnect' ? `${name(id)} left` : `${name(by)} eliminated ${name(id)}`);
+  updateHud();
+  if (isHost) { const a = aliveIds(); if (a.length <= 1) { const w = a[0] || 'none'; send({ t: 'win', id: w }); onWin(w); } }
+}
+function onWin(id) {
+  inMatch = false; zone.active = false; zoneMesh.visible = false;
+  banner(id === myId ? '#1 — LAST ONE STANDING!' : name(id) + ' WINS');
+  setStatus(isHost ? 'Next match in 8s (or press Enter)' : 'Next match starting soon…');
+  if (isHost) setTimeout(() => { if (!inMatch) startMatch(); }, 8000);
+  me.alive = true; me.hp = 100; updateHud();
+}
+
+// ---------- combat ----------
+const ray = new THREE.Raycaster();
+const tracers = [];
+function tracer(a, b, color) {
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color, transparent: true }));
+  scene.add(line); tracers.push({ line, t: 0.12 });
+}
+function applyHit(to, dmg, from) {
+  if (to === myId) return takeDamage(dmg, from);
+  const e = ents.get(to); if (!e || !e.alive) return;
+  if (e.kind === 'bot' && isHost) damageBot(e, dmg, from); else send({ t: 'hit', to, dmg, from });
+}
+function damageBot(e, dmg, from) {
+  if (!e.alive) return; e.hp -= dmg; e.ai.target = from; // bots fight back
+  if (e.hp <= 0) { send({ t: 'die', id: e.id, by: from }); onDeath(e.id, from); }
+}
+function shoot() {
+  fireT = FIRE_CD; recoil = 1;
+  const origin = new V3(); camera.getWorldPosition(origin);
+  const dir = new V3(); camera.getWorldDirection(dir);
+  dir.x += (Math.random() - 0.5) * 0.012; dir.y += (Math.random() - 0.5) * 0.012; dir.normalize();
+  ray.set(origin, dir); ray.far = 250;
+  const h = ray.intersectObjects([...worldMeshes, ...personMeshes()], false)[0];
+  const end = h ? h.point : origin.clone().addScaledVector(dir, 250);
+  const muzzle = new V3(0.25, -0.2, -0.9).applyMatrix4(camera.matrixWorld);
+  tracer(muzzle, end, 0xfff2a0); send({ t: 'shot', a: muzzle.toArray(), b: end.toArray() });
+  beep(220, 0.05, 'square', 0.05);
+  if (!h) return;
+  const ent = h.object.userData.ent, pid = h.object.userData.piece;
+  if (ent) { hitmark(); applyHit(ent, h.object.userData.part === 'head' ? 50 : 25, myId); }
+  else if (pid) { damagePiece(pid, 34); send({ t: 'pd', id: pid, dmg: 34 }); }
+}
+function takeDamage(dmg, from) {
+  if (!me.alive) return;
+  me.hp -= dmg; updateHud();
+  if (from !== 'storm') { $('flash').style.opacity = 1; setTimeout(() => $('flash').style.opacity = 0, 120); beep(110, 0.12, 'sawtooth', 0.08); }
+  if (me.hp <= 0) {
+    if (!inMatch) { me.hp = 100; me.pos.set((Math.random() - 0.5) * 20, 0, (Math.random() - 0.5) * 20); updateHud(); return; } // lobby: just respawn
+    const place = aliveIds().length;
+    me.alive = false; send({ t: 'die', id: myId, by: from }); onDeath(myId, from);
+    banner(`ELIMINATED — #${place}`); setStatus('Spectating — fly with WASD');
+  }
+}
+function build(kind) {
+  if (buildT > 0 || !mode) return; buildT = BUILD_CD;
+  const p = { id: myId + ':' + (buildCounter++), kind, ...cellInfo(me.pos, me.yaw), owner: myId };
+  for (const r of pieces.values()) if (r.kind === kind && r.cx === p.cx && r.cz === p.cz && r.level === p.level && r.dx === p.dx && r.dz === p.dz) return;
+  spawnPiece(p); send({ t: 'b', p }); beep(520, 0.04, 'triangle', 0.05);
+}
+
+// ---------- bots (simulated by the host) ----------
+function posOf(id) { if (id === myId) return me.alive ? me.pos : null; const e = ents.get(id); return e && e.alive ? (e.kind === 'bot' ? e.pos : e.av.g.position) : null; }
+function botsUpdate(dt) {
+  const R2 = zoneR();
+  for (const b of ents.values()) {
+    if (b.kind !== 'bot' || !b.alive) continue;
+    const ai = b.ai; ai.think -= dt; ai.fire -= dt;
+    if (ai.think <= 0) {
+      ai.think = 0.5 + Math.random() * 0.5; ai.strafe = Math.random() < 0.5 ? -1 : 1;
+      if (Math.random() < 0.2) ai.wander += (Math.random() - 0.5) * 2;
+      if (!posOf(ai.target) || b.pos.distanceTo(posOf(ai.target)) > 55) {
+        ai.target = null; let best = 50;
+        for (const id of aliveIds()) { if (id === b.id) continue; const p = posOf(id); const d = p && b.pos.distanceTo(p); if (p && d < best) { best = d; ai.target = id; } }
+      }
+    }
+    const tp = posOf(ai.target);
+    let mx, mz; const dzc = Math.hypot(b.pos.x - zone.cx, b.pos.z - zone.cz);
+    if (dzc > R2 * 0.8) { mx = zone.cx - b.pos.x; mz = zone.cz - b.pos.z; }
+    else if (tp) {
+      const dx = tp.x - b.pos.x, dz = tp.z - b.pos.z, d = Math.hypot(dx, dz) || 1, f = d > 20 ? 1 : d < 9 ? -1 : 0;
+      mx = dx / d * f + -dz / d * ai.strafe * 0.8; mz = dz / d * f + dx / d * ai.strafe * 0.8;
+      b.yaw = Math.atan2(-dx, -dz);
+    } else { mx = Math.sin(ai.wander); mz = Math.cos(ai.wander); }
+    if (!tp) b.yaw = Math.atan2(-mx, -mz);
+    const before = b.pos.clone();
+    stepBody(b, mx, mz, ai.jump, dt, 0.8); ai.jump = false;
+    if (b.pos.distanceTo(before) < SPEED * 0.8 * dt * 0.25 && b.onGround) { ai.jump = true; ai.wander += 1.5; }
+    if (tp && ai.fire <= 0) { ai.fire = 0.55 + Math.random() * 0.6; botShoot(b, ai.target, tp); }
+    if (dzc > R2) { b.hp -= 5 * dt; if (b.hp <= 0) { send({ t: 'die', id: b.id, by: 'storm' }); onDeath(b.id, 'storm'); } }
+    b.av.g.position.copy(b.pos); b.av.g.rotation.y = b.yaw;
+  }
+}
+function botShoot(b, tid, tp) {
+  const a = b.pos.clone(); a.y += 1.5; const t = tp.clone(); t.y += 1.2;
+  const dir = t.clone().sub(a); const dist = dir.length(); dir.normalize();
+  ray.set(a, dir); ray.far = dist;
+  const block = ray.intersectObjects(worldMeshes, false)[0];
+  if (block) {
+    const pid = block.object.userData.piece;
+    if (pid) { damagePiece(pid, 25); send({ t: 'pd', id: pid, dmg: 25 }); tracer(a, block.point, 0xffb070); send({ t: 'shot', a: a.toArray(), b: block.point.toArray() }); }
+    return;
+  }
+  const hit = Math.random() < Math.max(0.15, 0.65 - dist / 70);
+  const end = hit ? t : t.clone().add(new V3((Math.random() - 0.5) * 3, Math.random() * 2, (Math.random() - 0.5) * 3));
+  tracer(a, end, 0xffb070); send({ t: 'shot', a: a.toArray(), b: end.toArray() });
+  if (hit) applyHit(tid, 10, b.id);
+}
+
+// ---------- audio ----------
+let actx;
+function beep(f, d, type, v) { try { actx ||= new AudioContext(); const o = actx.createOscillator(), g = actx.createGain(); o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(v, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + d); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + d); } catch {} }
+
+// ---------- hud ----------
+function updateHud() {
+  const hp = Math.max(0, Math.ceil(me.hp));
+  $('hp').firstChild.nodeValue = hp; $('hpfill').style.width = hp + '%';
+  $('hpfill').style.background = hp > 50 ? '#3ddc84' : hp > 25 ? '#f5c542' : '#ff4d4d';
+  $('top').textContent = inMatch ? `👤 ${aliveIds().length} alive   ·   💀 ${kills} kills` : 'LOBBY';
+  if (!inMatch && mode === 'online') setStatus(isHost ? `${conns.size + 1} player(s) here — press ENTER to start (bots fill to ${TOTAL})` : 'In lobby — waiting for host to start');
+}
+let bannerTO;
+function banner(t) { const b = $('banner'); b.textContent = t; b.style.opacity = 1; clearTimeout(bannerTO); bannerTO = setTimeout(() => b.style.opacity = 0, 2200); }
+function hitmark() { $('cross').classList.add('hit'); beep(900, 0.05, 'sine', 0.06); setTimeout(() => $('cross').classList.remove('hit'), 120); }
+function feed(t) { const f = $('feed'), d = document.createElement('div'); d.textContent = t; f.prepend(d); while (f.children.length > 6) f.lastChild.remove(); setTimeout(() => d.remove(), 7000); }
+
+// ---------- physics (shared by player and bots) ----------
+function overlaps(b, s) {
+  const p = b.pos;
+  return p.x + R > s.min.x && p.x - R < s.max.x && p.y + H > s.min.y && p.y < s.max.y && p.z + R > s.min.z && p.z - R < s.max.z;
+}
+function moveAxis(b, a, dt) {
+  b.pos[a] += b.vel[a] * dt;
+  for (const s of solids) {
+    if (!overlaps(b, s)) continue;
+    if (a === 'y') { if (b.vel.y <= 0) { b.pos.y = s.max.y; b.onGround = true; } else b.pos.y = s.min.y - H; b.vel.y = 0; }
+    else { const c = (s.min[a] + s.max[a]) / 2; b.pos[a] = b.pos[a] < c ? s.min[a] - R - 1e-3 : s.max[a] + R + 1e-3; }
+  }
+}
+function stepBody(b, mx, mz, jump, dt, speedMul = 1) {
+  const l = Math.hypot(mx, mz); if (l > 1) { mx /= l; mz /= l; }
+  const k = Math.min(1, (b.onGround ? 14 : 5) * dt), sp = SPEED * speedMul;
+  b.vel.x += (mx * sp - b.vel.x) * k; b.vel.z += (mz * sp - b.vel.z) * k;
+  if (jump && b.onGround) b.vel.y = JUMP;
+  b.vel.y -= GRAV * dt; b.onGround = false;
+  moveAxis(b, 'x', dt); moveAxis(b, 'z', dt); moveAxis(b, 'y', dt);
+  for (const r of pieces.values()) if (r.ramp) {
+    const h = rampHeight(r.ramp, b.pos.x, b.pos.z);
+    if (h !== null && b.vel.y <= 0.5 && b.pos.y < h + 0.35 && b.pos.y > h - 1.3) { b.pos.y = h; b.vel.y = 0; b.onGround = true; }
+  }
+  if (b.pos.y <= 0) { b.pos.y = 0; b.vel.y = 0; b.onGround = true; }
+}
+
+// ---------- loop ----------
+let last = performance.now(), sendT = 0, worldT = 0, hudT = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (mode) {
+    const f = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), st = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    const sx = -Math.sin(me.yaw), sz = -Math.cos(me.yaw);
+    if (me.alive) {
+      stepBody(me, sx * f - sz * st, sz * f + sx * st, keys.Space, dt);
+      fireT -= dt; buildT -= dt;
+      if (mouseDown && fireT <= 0) shoot();
+      if (inMatch && outside(me.pos)) { stormTick += dt; if (stormTick > 0.5) { stormTick = 0; takeDamage(3, 'storm'); } }
+    } else { // spectator fly
+      const fwd = new V3(); camera.getWorldDirection(fwd);
+      me.pos.addScaledVector(fwd, f * 22 * dt).add(new V3(-sz, 0, sx).multiplyScalar(st * 22 * dt));
+      me.pos.y = Math.max(0, me.pos.y);
+    }
+    if (isHost) { botsUpdate(dt); worldT -= dt;
+      if (worldT <= 0 && conns.size) { worldT = 0.1; const b = []; for (const e of ents.values()) if (e.kind === 'bot') b.push([e.id, +e.pos.x.toFixed(2), +e.pos.y.toFixed(2), +e.pos.z.toFixed(2), +e.yaw.toFixed(2), e.alive ? 1 : 0]); send({ t: 'w', b }); } }
+    sendT -= dt; if (sendT <= 0) { sendT = 0.05; send({ t: 's', id: myId, p: me.pos.toArray().map(v => +v.toFixed(2)), y: +me.yaw.toFixed(3), g: !me.alive }); }
+    hudT -= dt; if (hudT <= 0) { hudT = 0.25; updateHud(); }
+    $('storm').style.opacity = inMatch && me.alive && outside(me.pos) ? 1 : 0;
+  }
+  // smooth remote people
+  for (const e of ents.values()) if (!(isHost && e.kind === 'bot')) { e.av.g.position.lerp(e.pos, Math.min(1, dt * 12)); e.av.g.rotation.y = e.yaw; }
+  const r = zoneR(); if (zone.active) { zoneMesh.scale.set(r, 1, r); zoneMesh.position.set(zone.cx, 50, zone.cz); }
+  camera.position.set(me.pos.x, me.pos.y + EYE, me.pos.z);
+  camera.rotation.set(me.pitch, me.yaw, 0, 'YXZ');
+  fpGun.visible = me.alive;
+  recoil = Math.max(0, recoil - dt * 8); fpGun.position.z = -0.5 + recoil * 0.08; fpGun.rotation.x = recoil * 0.15;
+  sun.position.set(me.pos.x + 30, 60, me.pos.z + 20); sun.target.position.copy(me.pos);
+  for (let i = tracers.length - 1; i >= 0; i--) { const t = tracers[i]; t.t -= dt; t.line.material.opacity = t.t / 0.12;
+    if (t.t <= 0) { scene.remove(t.line); t.line.geometry.dispose(); tracers.splice(i, 1); } }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+updateHud();
+</script>
+</body>
+</html>
